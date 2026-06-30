@@ -1,16 +1,14 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-import io
+from pydantic import BaseModel
 import os
 import uuid
 import subprocess
-import shutil
+import glob
 
-app = FastAPI(title="File Converter API")
+app = FastAPI(title="Audio/Video Converter API")
 
-# Izinkan akses dari mobile app manapun
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,63 +19,33 @@ app.add_middleware(
 TEMP_DIR = "/tmp/converter"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+ALLOWED_FORMATS = ["mp3", "wav", "mp4", "avi", "mov", "ogg", "m4a", "webm"]
+AUDIO_FORMATS = ["mp3", "wav", "ogg", "m4a"]
+
 
 @app.get("/")
 def read_root():
-    return {"message": "File Converter API jalan!", "status": "ok"}
+    return {"message": "Audio/Video Converter API jalan!", "status": "ok"}
 
 
-# ============ KONVERSI GAMBAR ============
-@app.post("/convert/image")
-async def convert_image(
-    file: UploadFile = File(...),
-    target_format: str = "png"
-):
-    allowed_formats = ["png", "jpeg", "jpg", "webp"]
-    if target_format.lower() not in allowed_formats:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Format tidak didukung. Pilih: {allowed_formats}"
-        )
-
-    contents = await file.read()
-
-    try:
-        image = Image.open(io.BytesIO(contents))
-    except Exception:
-        raise HTTPException(status_code=400, detail="File bukan gambar yang valid")
-
-    if target_format.lower() in ["jpeg", "jpg"] and image.mode in ["RGBA", "P"]:
-        image = image.convert("RGB")
-
-    output_buffer = io.BytesIO()
-    save_format = "JPEG" if target_format.lower() in ["jpeg", "jpg"] else target_format.upper()
-    image.save(output_buffer, format=save_format)
-    output_buffer.seek(0)
-
-    return StreamingResponse(
-        output_buffer,
-        media_type=f"image/{target_format.lower()}",
-        headers={
-            "Content-Disposition": f"attachment; filename=converted.{target_format.lower()}"
-        }
-    )
+def cleanup_files(*paths):
+    for path in paths:
+        if path and os.path.exists(path):
+            os.remove(path)
 
 
-# ============ KONVERSI AUDIO/VIDEO (FFmpeg) ============
+# ============ KONVERSI FILE UPLOAD ============
 @app.post("/convert/media")
 async def convert_media(
     file: UploadFile = File(...),
     target_format: str = "mp3"
 ):
-    allowed_formats = ["mp3", "wav", "mp4", "avi", "mov", "ogg", "m4a", "webm"]
-    if target_format.lower() not in allowed_formats:
+    if target_format.lower() not in ALLOWED_FORMATS:
         raise HTTPException(
             status_code=400,
-            detail=f"Format tidak didukung. Pilih: {allowed_formats}"
+            detail=f"Format tidak didukung. Pilih: {ALLOWED_FORMATS}"
         )
 
-    # Simpan file upload sementara
     file_id = str(uuid.uuid4())
     input_ext = os.path.splitext(file.filename)[1] or ".tmp"
     input_path = os.path.join(TEMP_DIR, f"{file_id}_input{input_ext}")
@@ -88,15 +56,15 @@ async def convert_media(
             content = await file.read()
             f.write(content)
 
-        # Jalankan FFmpeg untuk konversi
         result = subprocess.run(
             ["ffmpeg", "-i", input_path, "-y", output_path],
             capture_output=True,
             text=True,
-            timeout=300  # max 5 menit
+            timeout=300
         )
 
         if result.returncode != 0 or not os.path.exists(output_path):
+            cleanup_files(input_path, output_path)
             raise HTTPException(
                 status_code=500,
                 detail=f"Konversi gagal: {result.stderr[-300:]}"
@@ -105,11 +73,9 @@ async def convert_media(
         def iterfile():
             with open(output_path, "rb") as f:
                 yield from f
-            # Bersihkan file temporary setelah selesai dikirim
-            os.remove(input_path) if os.path.exists(input_path) else None
-            os.remove(output_path) if os.path.exists(output_path) else None
+            cleanup_files(input_path, output_path)
 
-        media_type = "audio" if target_format.lower() in ["mp3", "wav", "ogg", "m4a"] else "video"
+        media_type = "audio" if target_format.lower() in AUDIO_FORMATS else "video"
 
         return StreamingResponse(
             iterfile(),
@@ -120,12 +86,95 @@ async def convert_media(
         )
 
     except subprocess.TimeoutExpired:
+        cleanup_files(input_path, output_path)
         raise HTTPException(status_code=408, detail="Konversi terlalu lama, file mungkin terlalu besar")
+    except HTTPException:
+        raise
     except Exception as e:
-        # Bersihkan file kalau error
-        if os.path.exists(input_path):
-            os.remove(input_path)
-        if os.path.exists(output_path):
-            os.remove(output_path)
+        cleanup_files(input_path, output_path)
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ============ DOWNLOAD + CONVERT DARI URL ============
+class UrlDownloadRequest(BaseModel):
+    url: str
+    target_format: str = "mp3"
+
+
+@app.post("/download/url")
+async def download_from_url(request: UrlDownloadRequest):
+    target_format = request.target_format.lower()
+
+    if target_format not in ALLOWED_FORMATS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Format tidak didukung. Pilih: {ALLOWED_FORMATS}"
+        )
+
+    file_id = str(uuid.uuid4())
+    output_template = os.path.join(TEMP_DIR, f"{file_id}_output.%(ext)s")
+    is_audio_only = target_format in AUDIO_FORMATS
+
+    try:
+        if is_audio_only:
+            # Download lalu extract audio dengan format target
+            cmd = [
+                "yt-dlp",
+                "-x",
+                "--audio-format", target_format,
+                "-o", output_template,
+                "--no-playlist",
+                request.url
+            ]
+        else:
+            # Download video, lalu convert ke format target via ffmpeg merge
+            cmd = [
+                "yt-dlp",
+                "-f", "bestvideo+bestaudio/best",
+                "--merge-output-format", target_format,
+                "-o", output_template,
+                "--no-playlist",
+                request.url
+            ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600  # max 10 menit untuk download
+        )
+
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Download gagal: {result.stderr[-400:]}"
+            )
+
+        # Cari file hasil download (ekstensi sudah pasti sesuai target_format)
+        matches = glob.glob(os.path.join(TEMP_DIR, f"{file_id}_output.*"))
+        if not matches:
+            raise HTTPException(status_code=500, detail="File hasil download tidak ditemukan")
+
+        output_path = matches[0]
+
+        def iterfile():
+            with open(output_path, "rb") as f:
+                yield from f
+            cleanup_files(output_path)
+
+        media_type = "audio" if is_audio_only else "video"
+
+        return StreamingResponse(
+            iterfile(),
+            media_type=f"{media_type}/{target_format}",
+            headers={
+                "Content-Disposition": f"attachment; filename=downloaded.{target_format}"
+            }
+        )
+
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=408, detail="Download terlalu lama, coba lagi")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
