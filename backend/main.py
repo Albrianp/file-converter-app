@@ -101,10 +101,20 @@ class UrlDownloadRequest(BaseModel):
     target_format: str = "mp3"
 
 
+@app.get("/download/url")
+async def download_from_url_get(url: str, target_format: str = "mp3"):
+    """Endpoint GET untuk kompatibilitas dengan FileSystem.downloadAsync di React Native"""
+    return await _process_download(url, target_format)
+
+
 @app.post("/download/url")
 async def download_from_url(request: UrlDownloadRequest):
-    target_format = request.target_format.lower()
+    """Endpoint POST untuk request biasa"""
+    return await _process_download(request.url, request.target_format)
 
+
+async def _process_download(url: str, target_format: str):
+    target_format = target_format.lower()
     if target_format not in ALLOWED_FORMATS:
         raise HTTPException(
             status_code=400,
