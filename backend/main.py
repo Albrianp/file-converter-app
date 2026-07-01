@@ -127,24 +127,22 @@ async def _process_download(url: str, target_format: str):
 
     try:
         if is_audio_only:
-            # Download lalu extract audio dengan format target
             cmd = [
                 "yt-dlp",
                 "-x",
                 "--audio-format", target_format,
                 "-o", output_template,
                 "--no-playlist",
-                request.url
+                url
             ]
         else:
-            # Download video, lalu convert ke format target via ffmpeg merge
             cmd = [
                 "yt-dlp",
                 "-f", "bestvideo+bestaudio/best",
                 "--merge-output-format", target_format,
                 "-o", output_template,
                 "--no-playlist",
-                request.url
+                url
             ]
 
         result = subprocess.run(
