@@ -181,11 +181,12 @@ async def _process_download(url: str, target_format: str):
                 url
             ]
 
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=600  # max 10 menit untuk download
+	try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600  # max 10 menit untuk download
         )
 
         if result.returncode != 0:

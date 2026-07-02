@@ -4,6 +4,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as MediaLibrary from 'expo-media-library';
+import * as WebBrowser from 'expo-web-browser';
 
 // GANTI dengan URL Railway kamu
 const API_URL = process.env.EXPO_PUBLIC_API_URL || 'https://file-converter-app-production-9221.up.railway.app';
@@ -21,6 +22,10 @@ export default function HomeScreen() {
   const [loadingText, setLoadingText] = useState('Memproses...');
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [targetFormat, setTargetFormat] = useState('mp3');
+
+  const handleDonation = async () => {
+    await WebBrowser.openBrowserAsync('https://saweria.co/bryandms');
+  };
 
   const pickFile = async () => {
     try {
@@ -367,6 +372,14 @@ export default function HomeScreen() {
         <Text style={styles.warningText}>
           ⚠ Pastikan kamu punya hak untuk mengunduh konten tersebut
         </Text>
+
+        {/* Tombol Saweria */}
+        <View style={styles.footerContainer}>
+          <TouchableOpacity style={styles.saweriaButton} onPress={handleDonation}>
+            <Text style={styles.buttonText}>☕ Dukung Developer via Saweria</Text>
+          </TouchableOpacity>
+          <Text style={styles.subText}>Bantu kami menjaga server tetap aktif!</Text>
+        </View>
       </View>
     </ScrollView>
   );
@@ -624,5 +637,32 @@ const styles = StyleSheet.create({
     color: '#BA7517',
     textAlign: 'center',
     marginTop: 20,
+  },
+  footerContainer: {
+    alignItems: 'center',
+    marginTop: 32,
+    paddingHorizontal: 10,
+    width: '100%',
+  },
+  saweriaButton: {
+    backgroundColor: CARD_DARK,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#333',
+    width: '100%',
+    alignItems: 'center',
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: '600',
+    fontSize: 14,
+  },
+  subText: {
+    color: '#666',
+    fontSize: 11,
+    marginTop: 6,
+    fontStyle: 'italic',
   },
 });
