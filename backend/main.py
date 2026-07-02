@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,7 +7,17 @@ import uuid
 import subprocess
 import glob
 
+# === IMPORT UNTUK RATE LIMITING (POIN 2) ===
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 app = FastAPI(title="Audio/Video Converter API")
+
+# === INISIALISASI RATE LIMITER ===
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 app.add_middleware(
     CORSMiddleware,
@@ -21,6 +31,10 @@ os.makedirs(TEMP_DIR, exist_ok=True)
 
 ALLOWED_FORMATS = ["mp3", "wav", "mp4", "avi", "mov", "ogg", "m4a", "webm"]
 AUDIO_FORMATS = ["mp3", "wav", "ogg", "m4a"]
+
+# === KONFIGURASI FILE SIZE LIMIT (POIN 3) ===
+# 50 MB dalam satuan bytes (Anda bisa ubah angka 50 sesuai keinginan)
+MAX_FILE_SIZE = 50 * 1024 * 1024 
 
 
 @app.get("/")
@@ -36,7 +50,9 @@ def cleanup_files(*paths):
 
 # ============ KONVERSI FILE UPLOAD ============
 @app.post("/convert/media")
+@limiter.limit("5/minute")  # Batasi 5 request per menit per IP (Poin 2)
 async def convert_media(
+    request: Request,       # Wajib ditambahkan untuk Slowapi
     file: UploadFile = File(...),
     target_format: str = "mp3"
 ):
@@ -52,8 +68,15 @@ async def convert_media(
     output_path = os.path.join(TEMP_DIR, f"{file_id}_output.{target_format.lower()}")
 
     try:
+        # --- VALIDASI UKURAN FILE SEBELUM DI-WRITE (POIN 3) ---
+        content = await file.read()
+        if len(content) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=413, 
+                detail=f"File terlalu besar! Maksimal ukuran file adalah {MAX_FILE_SIZE // (1024*1024)} MB."
+            )
+
         with open(input_path, "wb") as f:
-            content = await file.read()
             f.write(content)
 
         result = subprocess.run(
@@ -102,15 +125,24 @@ class UrlDownloadRequest(BaseModel):
 
 
 @app.get("/download/url")
-async def download_from_url_get(url: str, target_format: str = "mp3"):
+@limiter.limit("5/minute")  # Batasi 5 request per menit per IP (Poin 2)
+async def download_from_url_get(
+    request: Request,       # Wajib ditambahkan untuk Slowapi
+    url: str, 
+    target_format: str = "mp3"
+):
     """Endpoint GET untuk kompatibilitas dengan FileSystem.downloadAsync di React Native"""
     return await _process_download(url, target_format)
 
 
 @app.post("/download/url")
-async def download_from_url(request: UrlDownloadRequest):
+@limiter.limit("5/minute")  # Batasi 5 request per menit per IP (Poin 2)
+async def download_from_url(
+    request: Request,       # Wajib ditambahkan untuk Slowapi
+    payload: UrlDownloadRequest  # Diubah dari 'request' agar tidak bentrok nama variable
+):
     """Endpoint POST untuk request biasa"""
-    return await _process_download(request.url, request.target_format)
+    return await _process_download(payload.url, payload.target_format)
 
 
 async def _process_download(url: str, target_format: str):
@@ -131,6 +163,8 @@ async def _process_download(url: str, target_format: str):
                 "yt-dlp",
                 "-x",
                 "--audio-format", target_format,
+                # --- BATASI UKURAN DOWNLOAD YT-DLP (POIN 3) ---
+                "--max-filesize", f"{MAX_FILE_SIZE}", 
                 "-o", output_template,
                 "--no-playlist",
                 url
@@ -139,6 +173,8 @@ async def _process_download(url: str, target_format: str):
             cmd = [
                 "yt-dlp",
                 "-f", "bestvideo+bestaudio/best",
+                # --- BATASI UKURAN DOWNLOAD YT-DLP (POIN 3) ---
+                "--max-filesize", f"{MAX_FILE_SIZE}",
                 "--merge-output-format", target_format,
                 "-o", output_template,
                 "--no-playlist",
@@ -153,12 +189,16 @@ async def _process_download(url: str, target_format: str):
         )
 
         if result.returncode != 0:
+            # Jika gagal karena ukuran file melebihi batas yt-dlp
+            if "File is larger than max-filesize" in result.stderr:
+                raise HTTPException(status_code=413, detail="File di URL tersebut terlalu besar (Maks 50MB)")
+                
             raise HTTPException(
                 status_code=400,
                 detail=f"Download gagal: {result.stderr[-400:]}"
             )
 
-        # Cari file hasil download (ekstensi sudah pasti sesuai target_format)
+        # Cari file hasil download
         matches = glob.glob(os.path.join(TEMP_DIR, f"{file_id}_output.*"))
         if not matches:
             raise HTTPException(status_code=500, detail="File hasil download tidak ditemukan")
