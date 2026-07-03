@@ -181,8 +181,7 @@ async def _process_download(url: str, target_format: str):
                 url
             ]
 
-	try:
-            result = subprocess.run(
+        result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
