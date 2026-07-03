@@ -34,7 +34,7 @@ AUDIO_FORMATS = ["mp3", "wav", "ogg", "m4a"]
 
 # === KONFIGURASI FILE SIZE LIMIT (POIN 3) ===
 # 50 MB dalam satuan bytes (Anda bisa ubah angka 50 sesuai keinginan)
-MAX_FILE_SIZE = 50 * 1024 * 1024 
+MAX_FILE_SIZE = 200 * 1024 * 1024 
 
 
 @app.get("/")
